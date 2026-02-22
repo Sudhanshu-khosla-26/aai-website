@@ -1,8 +1,7 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { login, register, logout, verifyOTP, forgotPassword, resetPassword, getCurrentUser } from '../services/authService';
 import { ROLES } from '../lib/constants';
 import toast from 'react-hot-toast';
 
@@ -12,18 +11,26 @@ const normalizeRole = (role) => (role || '').toLowerCase();
 
 const normalizeUser = (rawUser) => {
   if (!rawUser) return null;
-  if (rawUser.firstName || rawUser.lastName) {
-    const fullName = rawUser.fullName || [rawUser.firstName, rawUser.lastName].filter(Boolean).join(' ').trim();
-    return { ...rawUser, fullName };
-  }
-  if (rawUser.fullName) {
-    const parts = rawUser.fullName.trim().split(/\s+/);
-    const firstName = parts.shift() || '';
-    const lastName = parts.join(' ');
-    return { ...rawUser, firstName, lastName };
-  }
-  return rawUser;
+  const firstName = rawUser.firstName || (rawUser.fullName?.trim().split(/\s+/)[0] ?? '');
+  const lastParts = rawUser.fullName?.trim().split(/\s+/).slice(1) ?? [];
+  const lastName = rawUser.lastName || lastParts.join(' ');
+  const fullName = rawUser.fullName || [firstName, lastName].filter(Boolean).join(' ').trim();
+  return { ...rawUser, firstName, lastName, fullName };
 };
+
+/** Call Next.js API routes */
+async function apiFetch(path, options = {}) {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('aai_token') : null;
+  const res = await fetch(path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  return res.json();
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -32,73 +39,84 @@ export function AuthProvider({ children }) {
   const router = useRouter();
   const pathname = usePathname();
 
-  // Check authentication status on mount
-  useEffect(() => {
-    checkAuth();
-  }, []);
-
-  // Redirect unauthenticated users from protected routes
-  useEffect(() => {
-    if (!isLoading) {
-      const publicRoutes = ['/login', '/signup', '/forgot-password', '/reset-password', '/'];
-      const isPublicRoute = publicRoutes.some(route => pathname === route || pathname?.startsWith(route));
-      
-      if (!isAuthenticated && !isPublicRoute) {
-        router.push('/login');
-      }
-      
-      if (isAuthenticated && (pathname === '/login' || pathname === '/signup')) {
-        const redirectPath = normalizeRole(user?.role) === ROLES.ADMIN || normalizeRole(user?.role) === ROLES.SUPER_ADMIN
-          ? '/admin/dashboard'
-          : '/employee/dashboard';
-        router.push(redirectPath);
-      }
-    }
-  }, [isAuthenticated, isLoading, pathname, router, user]);
-
-  const checkAuth = async () => {
+  const checkAuth = useCallback(async () => {
     try {
       const token = localStorage.getItem('aai_token');
-      if (token) {
-        const userData = await getCurrentUser();
-        if (userData) {
-          setUser(normalizeUser(userData));
-          setIsAuthenticated(true);
-        } else {
-          localStorage.removeItem('aai_token');
-        }
+      if (!token) return;
+
+      const data = await apiFetch('/api/auth/me');
+      if (data.success && data.user) {
+        setUser(normalizeUser(data.user));
+        setIsAuthenticated(true);
+      } else {
+        localStorage.removeItem('aai_token');
+        setIsAuthenticated(false);
+        setUser(null);
       }
     } catch (error) {
       console.error('Auth check failed:', error);
       localStorage.removeItem('aai_token');
+      setIsAuthenticated(false);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
+
+  // Route guard
+  useEffect(() => {
+    if (!isLoading) {
+      const publicRoutes = ['/login', '/signup', '/forgot-password', '/reset-password', '/'];
+      const isPublicRoute = publicRoutes.some(
+        (route) => pathname === route || pathname?.startsWith(route + '/')
+      );
+
+      if (!isAuthenticated && !isPublicRoute) {
+        router.push('/login');
+      }
+
+      if (isAuthenticated && (pathname === '/login' || pathname === '/signup')) {
+        const role = normalizeRole(user?.role);
+        const redirectPath =
+          role === ROLES.ADMIN || role === ROLES.SUPER_ADMIN
+            ? '/admin/dashboard'
+            : '/employee/dashboard';
+        router.push(redirectPath);
+      }
+    }
+  }, [isAuthenticated, isLoading, pathname, router, user]);
 
   const handleLogin = async (credentials) => {
     try {
       setIsLoading(true);
       const identifier = credentials?.identifier || credentials?.email || credentials?.employeeId || credentials;
       const password = credentials?.password;
-      const response = await login(identifier, password);
 
-      if (!response?.success) {
-        throw new Error(response?.error || 'Login failed');
+      const data = await apiFetch('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ identifier, password }),
+      });
+
+      if (!data?.success) {
+        throw new Error(data?.message || 'Login failed');
       }
 
-      localStorage.setItem('aai_token', response.token);
-      const normalizedUser = normalizeUser(response.user);
+      localStorage.setItem('aai_token', data.token);
+      const normalizedUser = normalizeUser(data.user);
       setUser(normalizedUser);
       setIsAuthenticated(true);
 
       toast.success(`Welcome back, ${normalizedUser?.firstName || normalizedUser?.fullName || 'User'}!`);
 
-      // Redirect based on role
-      const redirectPath = normalizeRole(normalizedUser?.role) === ROLES.ADMIN || normalizeRole(normalizedUser?.role) === ROLES.SUPER_ADMIN
-        ? '/admin/dashboard'
-        : '/employee/dashboard';
-      
+      const role = normalizeRole(normalizedUser?.role);
+      const redirectPath =
+        role === ROLES.ADMIN || role === ROLES.SUPER_ADMIN
+          ? '/admin/dashboard'
+          : '/employee/dashboard';
+
       router.push(redirectPath);
       return { success: true };
     } catch (error) {
@@ -112,15 +130,18 @@ export function AuthProvider({ children }) {
   const handleRegister = async (userData) => {
     try {
       setIsLoading(true);
-      const response = await register(userData);
+      const data = await apiFetch('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify(userData),
+      });
 
-      if (!response?.success) {
-        throw new Error(response?.error || 'Registration failed');
+      if (!data?.success) {
+        throw new Error(data?.message || 'Registration failed');
       }
 
-      toast.success(response?.message || 'Registration successful! Please wait for approval.');
+      toast.success(data?.message || 'Registration successful! Please wait for approval.');
       router.push('/login');
-      return { success: true, userId: response?.user?.id };
+      return { success: true, userId: data?.user?._id };
     } catch (error) {
       toast.error(error.message || 'Registration failed');
       return { success: false, error: error.message };
@@ -131,24 +152,42 @@ export function AuthProvider({ children }) {
 
   const handleLogout = async () => {
     try {
-      await logout();
+      await apiFetch('/api/auth/logout', { method: 'POST' });
+    } catch (_) { }
+    localStorage.removeItem('aai_token');
+    setUser(null);
+    setIsAuthenticated(false);
+    toast.success('Logged out successfully');
+    router.push('/login');
+  };
+
+  const handleForgotPassword = async (email) => {
+    try {
+      setIsLoading(true);
+      const data = await apiFetch('/api/auth/forgot-password', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      });
+      if (!data?.success) throw new Error(data?.message);
+      toast.success(data.message || 'OTP sent to your email');
+      return { success: true, demoOtp: data.demoOtp };
     } catch (error) {
-      console.error('Logout error:', error);
+      toast.error(error.message || 'Failed to send OTP');
+      return { success: false, error: error.message };
     } finally {
-      localStorage.removeItem('aai_token');
-      setUser(null);
-      setIsAuthenticated(false);
-      toast.success('Logged out successfully');
-      router.push('/login');
+      setIsLoading(false);
     }
   };
 
-  const handleVerifyOTP = async (otpData) => {
+  const handleVerifyOTP = async ({ email, otp }) => {
     try {
       setIsLoading(true);
-      await verifyOTP(otpData);
+      const data = await apiFetch('/api/auth/verify-otp', {
+        method: 'POST',
+        body: JSON.stringify({ email, otp }),
+      });
+      if (!data?.success) throw new Error(data?.message);
       toast.success('OTP verified successfully!');
-      router.push('/login');
       return { success: true };
     } catch (error) {
       toast.error(error.message || 'OTP verification failed');
@@ -158,25 +197,15 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const handleForgotPassword = async (email) => {
+  const handleResetPassword = async ({ email, otp, newPassword }) => {
     try {
       setIsLoading(true);
-      await forgotPassword(email);
-      toast.success('Password reset instructions sent to your email');
-      return { success: true };
-    } catch (error) {
-      toast.error(error.message || 'Failed to send reset instructions');
-      return { success: false, error: error.message };
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleResetPassword = async (resetData) => {
-    try {
-      setIsLoading(true);
-      await resetPassword(resetData);
-      toast.success('Password reset successful! Please login with your new password.');
+      const data = await apiFetch('/api/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ email, otp, newPassword }),
+      });
+      if (!data?.success) throw new Error(data?.message);
+      toast.success('Password reset successful! Please login.');
       router.push('/login');
       return { success: true };
     } catch (error) {
@@ -203,18 +232,14 @@ export function AuthProvider({ children }) {
     login: handleLogin,
     register: handleRegister,
     logout: handleLogout,
-    verifyOTP: handleVerifyOTP,
     forgotPassword: handleForgotPassword,
+    verifyOTP: handleVerifyOTP,
     resetPassword: handleResetPassword,
     hasPermission,
     refreshUser: checkAuth,
   };
 
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

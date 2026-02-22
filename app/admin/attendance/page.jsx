@@ -10,7 +10,7 @@ import Badge from '../../../components/ui/Badge';
 import Modal from '../../../components/ui/Modal';
 import Table, { TableHead, TableBody, TableRow, TableHeader, TableCell } from '../../../components/ui/Table';
 import { Search, Calendar, MapPin, Eye, Download, Filter, CheckCircle, XCircle, Clock } from 'lucide-react';
-import { getAttendanceRecords, getAttendanceStats } from '../../../services/attendanceService';
+import { getAttendance, getAttendanceStats } from '../../../services/attendanceService';
 import { getUsers } from '../../../services/userService';
 import { formatDate, formatTime } from '../../../lib/utils';
 import toast from 'react-hot-toast';
@@ -44,15 +44,16 @@ export default function AttendancePage() {
     try {
       setIsLoading(true);
       const [attendanceData, employeesData, statsData] = await Promise.all([
-        getAttendanceRecords(),
+        getAttendance(),
         getUsers(),
         getAttendanceStats(),
       ]);
       const employees = employeesData?.users || [];
-      setAttendance(attendanceData);
-      setFilteredAttendance(attendanceData);
+      const records = attendanceData?.records || [];
+      setAttendance(records);
+      setFilteredAttendance(records);
       setEmployees(employees);
-      setStats(statsData.summary || { present: 145, absent: 8, late: 12, onLeave: 5 });
+      setStats(statsData?.stats || { present: 0, absent: 0, late: 0, onLeave: 0 });
     } catch (error) {
       toast.error('Failed to fetch attendance data');
     } finally {

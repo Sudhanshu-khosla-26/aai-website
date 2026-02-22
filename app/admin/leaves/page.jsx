@@ -10,7 +10,7 @@ import Badge from '../../../components/ui/Badge';
 import Modal from '../../../components/ui/Modal';
 import Table, { TableHead, TableBody, TableRow, TableHeader, TableCell } from '../../../components/ui/Table';
 import { Search, CheckCircle, XCircle, Eye, Download, Calendar, Clock } from 'lucide-react';
-import { getLeaves, updateLeaveStatus } from '../../../services/leaveService';
+import { getLeaves, approveLeave, rejectLeave } from '../../../services/leaveService';
 import { getUsers } from '../../../services/userService';
 import { LEAVE_TYPES } from '../../../lib/constants';
 import { formatDate, calculateDaysBetween } from '../../../lib/utils';
@@ -96,7 +96,7 @@ export default function LeavesPage() {
 
   const handleApprove = async () => {
     try {
-      await updateLeaveStatus(selectedLeave.id, 'APPROVED');
+      await approveLeave(selectedLeave._id || selectedLeave.id, null, '');
       toast.success('Leave application approved');
       setIsModalOpen(false);
       fetchData();
@@ -112,7 +112,7 @@ export default function LeavesPage() {
     }
 
     try {
-      await updateLeaveStatus(selectedLeave.id, 'REJECTED', rejectionReason);
+      await rejectLeave(selectedLeave._id || selectedLeave.id, null, rejectionReason);
       toast.success('Leave application rejected');
       setIsModalOpen(false);
       fetchData();
@@ -148,7 +148,7 @@ export default function LeavesPage() {
     label: type.name,
   }));
 
-  const pendingCount = leaves.filter(l => l.status === 'PENDING').length;
+  const pendingCount = leaves.filter(l => l.status === 'pending').length;
 
   return (
     <DashboardLayout>
